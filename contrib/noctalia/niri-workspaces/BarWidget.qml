@@ -96,11 +96,19 @@ Item {
   }
 
   function applyStatus(text) {
+    var focused = focusedWorkspace();
+    if (!focused || !focused.name || focused.name.indexOf("scratch:") !== 0) {
+      activeScratch = "";
+      returnWorkspaceId = -1;
+      rebuild();
+      return;
+    }
+    var focusedScratch = focused.name.substring(8);
     try {
       var response = JSON.parse(text);
       var data = response.data || {};
       for (var name in data) {
-        if (data[name].visible) {
+        if (data[name].visible && name === focusedScratch) {
           activeScratch = name;
           var origin = data[name].origin;
           if (origin && origin.workspace_id)

@@ -175,6 +175,7 @@ pub struct ReturnTarget {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedState {
     pub origins: BTreeMap<String, ReturnTarget>,
+    pub last_normal: Option<ReturnTarget>,
 }
 
 impl PersistedState {
@@ -358,6 +359,23 @@ impl<C: Compositor> Engine<C> {
             .iter()
             .find(|workspace| workspace.is_focused)
             .ok_or_else(|| anyhow!("Niri reports no focused workspace"))?;
+        let focused_is_scratch = self
+            .config
+            .scratchpads
+            .values()
+            .any(|candidate| focused.name.as_ref() == Some(&candidate.workspace));
+        if !focused_is_scratch {
+            let normal = ReturnTarget {
+                workspace_id: focused.id,
+                workspace_name: focused.name.clone(),
+                output_name: focused.output.clone(),
+                focused_window_id: focused.active_window_id,
+            };
+            if self.state.last_normal.as_ref() != Some(&normal) {
+                self.state.last_normal = Some(normal);
+                self.state.save(&self.state_path)?;
+            }
+        }
         let is_visible = focused.name.as_deref() == Some(pad.workspace.as_str());
         let show = match desired {
             Desired::Toggle => !is_visible,
@@ -400,6 +418,8 @@ impl<C: Compositor> Engine<C> {
                 .iter()
                 .find(|(_, other)| focused.name.as_ref() == Some(&other.workspace))
                 .and_then(|(other_name, _)| self.state.origins.get(other_name).cloned())
+                .filter(|candidate| !self.is_scratch_target(candidate))
+                .or_else(|| self.state.last_normal.clone())
                 .unwrap_or(direct_origin);
             self.state.origins.insert(name.to_string(), origin);
             self.state.save(&self.state_path)?;
@@ -543,7 +563,23 @@ impl<C: Compositor> Engine<C> {
         workspaces: &[Workspace],
         windows: &[Window],
     ) -> Result<ControlResponse> {
-        let origin = self.state.origins.remove(name);
+        let origin = self
+            .state
+            .origins
+            .remove(name)
+            .filter(|candidate| !self.is_scratch_target(candidate))
+            .or_else(|| self.state.last_normal.clone())
+            .or_else(|| {
+                workspaces
+                    .iter()
+                    .find(|workspace| workspace.name.as_deref() == Some("1"))
+                    .map(|workspace| ReturnTarget {
+                        workspace_id: workspace.id,
+                        workspace_name: workspace.name.clone(),
+                        output_name: workspace.output.clone(),
+                        focused_window_id: workspace.active_window_id,
+                    })
+            });
         self.state.save(&self.state_path)?;
         if let Some(origin) = origin {
             let target = workspaces
@@ -581,6 +617,13 @@ impl<C: Compositor> Engine<C> {
             format!("hidden {name}; used previous workspace fallback"),
             None,
         ))
+    }
+
+    fn is_scratch_target(&self, target: &ReturnTarget) -> bool {
+        self.config
+            .scratchpads
+            .values()
+            .any(|pad| target.workspace_name.as_ref() == Some(&pad.workspace))
     }
 
     fn hide_all(&mut self) -> Result<ControlResponse> {
@@ -1157,6 +1200,62 @@ mod tests {
             engine.compositor.actions[1],
             Action::FocusWindow { id: 7 }
         ));
+    }
+
+    #[test]
+    fn hide_rejects_self_origin_and_falls_back_to_workspace_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let compositor = FakeCompositor {
+            workspaces: vec![
+                workspace(1, "1", false),
+                workspace(20, "scratch:terminal", true),
+            ],
+            windows: vec![],
+            actions: vec![],
+        };
+        let mut engine =
+            Engine::new(test_config(&dir.path().join("state.json")), compositor).unwrap();
+        engine.state.origins.insert(
+            "terminal".into(),
+            ReturnTarget {
+                workspace_id: 20,
+                workspace_name: Some("scratch:terminal".into()),
+                output_name: Some("eDP-1".into()),
+                focused_window_id: None,
+            },
+        );
+        engine
+            .handle(ControlRequest::Toggle {
+                scratchpad: "terminal".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            engine.compositor.actions.as_slice(),
+            [Action::FocusWorkspace {
+                reference: WorkspaceReferenceArg::Id(1)
+            }]
+        ));
+    }
+
+    #[test]
+    fn transition_from_normal_workspace_remembers_it_as_last_normal() {
+        let dir = tempfile::tempdir().unwrap();
+        let compositor = FakeCompositor {
+            workspaces: vec![
+                workspace(1, "1", true),
+                workspace(20, "scratch:terminal", false),
+            ],
+            windows: vec![window(9, "scratch-terminal", 20)],
+            actions: vec![],
+        };
+        let mut engine =
+            Engine::new(test_config(&dir.path().join("state.json")), compositor).unwrap();
+        engine
+            .handle(ControlRequest::Show {
+                scratchpad: "terminal".into(),
+            })
+            .unwrap();
+        assert_eq!(engine.state.last_normal.as_ref().unwrap().workspace_id, 1);
     }
 
     #[test]
