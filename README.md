@@ -6,6 +6,10 @@ workspace/window you came from. The daemon talks directly to Niri IPC, serialize
 races, adopts matching windows when configured, and never depends on `jq` or shell scripts in the
 hot path.
 
+Toggle requests are non-blocking: slow application discovery runs in a background anchor worker,
+so repeated key presses remain responsive. A per-scratchpad pending-launch guard prevents a rapid
+show/hide/show sequence from spawning duplicate applications.
+
 > Niri has no hidden “special workspace” primitive. `niri-scratch` implements scratchpads with
 > named regular workspaces such as `scratch:terminal`; they can therefore still appear in Overview.
 

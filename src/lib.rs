@@ -31,6 +31,7 @@ pub struct DaemonConfig {
     pub socket: Option<PathBuf>,
     pub state_file: Option<PathBuf>,
     pub launch_timeout_ms: u64,
+    pub background_anchor: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -53,6 +54,7 @@ impl Default for DaemonConfig {
             socket: None,
             state_file: None,
             launch_timeout_ms: 8_000,
+            background_anchor: true,
         }
     }
 }
@@ -299,6 +301,7 @@ pub struct Engine<C: Compositor> {
     pub state: PersistedState,
     pub compositor: C,
     state_path: PathBuf,
+    pending_until: BTreeMap<String, Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -317,6 +320,7 @@ impl<C: Compositor> Engine<C> {
             state,
             compositor,
             state_path,
+            pending_until: BTreeMap::new(),
         })
     }
 
@@ -401,10 +405,10 @@ impl<C: Compositor> Engine<C> {
             self.state.save(&self.state_path)?;
         }
 
-        let scratch_workspace_id = workspaces
+        let scratch_workspace = workspaces
             .iter()
-            .find(|workspace| workspace.name.as_deref() == Some(pad.workspace.as_str()))
-            .map(|workspace| workspace.id);
+            .find(|workspace| workspace.name.as_deref() == Some(pad.workspace.as_str()));
+        let scratch_workspace_id = scratch_workspace.map(|workspace| workspace.id);
         let matched = matching_windows(pad, windows)?;
         let selected: Vec<_> = matched
             .iter()
@@ -427,10 +431,28 @@ impl<C: Compositor> Engine<C> {
         })?;
 
         if !selected.is_empty() {
+            // Ask Niri for the workspace's own last-focused window. This is dynamic state, not
+            // "the first matching app", so Telegram/Throne resume exactly where the user left.
+            if let Some(last_window_id) = scratch_workspace.and_then(|ws| ws.active_window_id)
+                && selected.iter().any(|window| window.id == last_window_id)
+            {
+                self.compositor
+                    .action(Action::FocusWindow { id: last_window_id })?;
+            }
             return Ok(ControlResponse::ok(format!("shown {name}"), None));
         }
 
         if pad.launch_if_missing {
+            if self
+                .pending_until
+                .get(name)
+                .is_some_and(|deadline| *deadline > Instant::now())
+            {
+                return Ok(ControlResponse::ok(
+                    format!("shown {name}; application launch already pending"),
+                    None,
+                ));
+            }
             let windows_before: HashSet<u64> = windows.iter().map(|window| window.id).collect();
             let launch_commands: Vec<Vec<String>> = if pad.commands.is_empty() {
                 vec![pad.command.clone()]
@@ -443,12 +465,23 @@ impl<C: Compositor> Engine<C> {
                 })?;
             }
 
+            let timeout = Duration::from_millis(self.config.daemon.launch_timeout_ms);
+            self.pending_until
+                .insert(name.to_string(), Instant::now() + timeout);
+
+            if self.config.daemon.background_anchor && !timeout.is_zero() {
+                spawn_anchor_worker(pad.clone(), windows_before, launch_commands.len(), timeout);
+                return Ok(ControlResponse::ok(
+                    format!("shown {name}; application launch scheduled"),
+                    None,
+                ));
+            }
+
             // Niri's activation token normally places a spawned window on the workspace where the
             // action originated. Keep an IPC-side safety net for slow applications: if the user
             // changes workspace before the window maps, anchor the newly created matching window
             // back to this scratchpad without stealing focus.
-            let deadline =
-                Instant::now() + Duration::from_millis(self.config.daemon.launch_timeout_ms);
+            let deadline = Instant::now() + timeout;
             let mut anchored = HashSet::new();
             while Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(50));
@@ -627,6 +660,82 @@ impl<C: Compositor> Engine<C> {
             })),
         ))
     }
+}
+
+fn spawn_anchor_worker(
+    pad: ScratchpadConfig,
+    windows_before: HashSet<u64>,
+    expected_windows: usize,
+    timeout: Duration,
+) {
+    thread::spawn(move || {
+        if let Err(error) = anchor_spawned_windows(&pad, &windows_before, expected_windows, timeout)
+        {
+            eprintln!("background anchor for {} failed: {error:#}", pad.workspace);
+        }
+    });
+}
+
+fn anchor_spawned_windows(
+    pad: &ScratchpadConfig,
+    windows_before: &HashSet<u64>,
+    expected_windows: usize,
+    timeout: Duration,
+) -> Result<()> {
+    let mut compositor = NiriCompositor;
+    let deadline = Instant::now() + timeout;
+    let mut anchored = HashSet::new();
+    let mut latest_windows = Vec::new();
+
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+        latest_windows = compositor.windows()?;
+        let new_window_ids: Vec<u64> = matching_windows(pad, &latest_windows)?
+            .into_iter()
+            .map(|window| window.id)
+            .filter(|id| !windows_before.contains(id) && !anchored.contains(id))
+            .collect();
+        for window_id in new_window_ids {
+            compositor.action(Action::MoveWindowToWorkspace {
+                window_id: Some(window_id),
+                reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
+                focus: false,
+            })?;
+            anchored.insert(window_id);
+        }
+        if anchored.len() >= expected_windows {
+            break;
+        }
+    }
+
+    if anchored.len() < expected_windows {
+        return Ok(());
+    }
+
+    // Initial focus/layout is allowed only while the user is still looking at this scratchpad.
+    // Leaving during a slow launch must never teleport them back.
+    let still_visible = compositor.workspaces()?.iter().any(|workspace| {
+        workspace.is_focused && workspace.name.as_deref() == Some(pad.workspace.as_str())
+    });
+    if still_visible && let Some(pattern) = &pad.initial_focus_app_id {
+        let pattern = Regex::new(pattern)?;
+        if let Some(window) = latest_windows.iter().find(|window| {
+            anchored.contains(&window.id)
+                && window
+                    .app_id
+                    .as_deref()
+                    .is_some_and(|app_id| pattern.is_match(app_id))
+        }) {
+            compositor.action(Action::FocusWindow { id: window.id })?;
+            if pad.initial_focus_full_width {
+                compositor.action(Action::MoveColumnToFirst {})?;
+                compositor.action(Action::SetColumnWidth {
+                    change: SizeChange::SetProportion(1.0),
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn matching_windows<'a>(pad: &ScratchpadConfig, windows: &'a [Window]) -> Result<Vec<&'a Window>> {
@@ -827,6 +936,7 @@ mod tests {
                 socket: None,
                 state_file: Some(state_path.into()),
                 launch_timeout_ms: 10,
+                background_anchor: false,
             },
             scratchpads: BTreeMap::from([(
                 "terminal".into(),
@@ -951,6 +1061,63 @@ mod tests {
             Action::FocusWorkspace { .. }
         ));
         assert_eq!(engine.compositor.actions.len(), 1);
+    }
+
+    #[test]
+    fn show_restores_workspace_active_window_instead_of_first_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut scratch = workspace(20, "scratch:terminal", false);
+        scratch.active_window_id = Some(10);
+        let compositor = FakeCompositor {
+            workspaces: vec![workspace(1, "1", true), scratch],
+            windows: vec![
+                window(9, "scratch-terminal", 20),
+                window(10, "scratch-terminal", 20),
+            ],
+            actions: vec![],
+        };
+        let mut engine =
+            Engine::new(test_config(&dir.path().join("state.json")), compositor).unwrap();
+        engine
+            .handle(ControlRequest::Show {
+                scratchpad: "terminal".into(),
+            })
+            .unwrap();
+        assert!(matches!(
+            engine.compositor.actions.as_slice(),
+            [
+                Action::FocusWorkspace { .. },
+                Action::FocusWindow { id: 10 }
+            ]
+        ));
+    }
+
+    #[test]
+    fn pending_launch_suppresses_duplicate_spawn_during_rapid_toggle() {
+        let dir = tempfile::tempdir().unwrap();
+        let compositor = FakeCompositor {
+            workspaces: vec![
+                workspace(1, "1", true),
+                workspace(20, "scratch:terminal", false),
+            ],
+            windows: vec![],
+            actions: vec![],
+        };
+        let mut engine =
+            Engine::new(test_config(&dir.path().join("state.json")), compositor).unwrap();
+        engine
+            .pending_until
+            .insert("terminal".into(), Instant::now() + Duration::from_secs(1));
+        let response = engine
+            .handle(ControlRequest::Show {
+                scratchpad: "terminal".into(),
+            })
+            .unwrap();
+        assert!(response.message.contains("already pending"));
+        assert!(matches!(
+            engine.compositor.actions.as_slice(),
+            [Action::FocusWorkspace { .. }]
+        ));
     }
 
     #[test]
