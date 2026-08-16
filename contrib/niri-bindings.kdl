@@ -2,8 +2,12 @@
 workspace "scratch:web"
 workspace "scratch:d"
 workspace "scratch:f"
+workspace "scratch:chat"
+workspace "scratch:u"
 
 // Add these entries inside a binds { ... } block.
 Mod+S repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "web"; }
 Mod+D repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "d"; }
 Mod+F repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "f"; }
+Mod+Slash repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "chat"; }
+Mod+U repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "u"; }

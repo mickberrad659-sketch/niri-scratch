@@ -18,7 +18,9 @@ Item {
   readonly property var pads: [
     { "name": "web", "icon": "brand-firefox" },
     { "name": "d", "icon": "letter-d" },
-    { "name": "f", "icon": "letter-f" }
+    { "name": "f", "icon": "letter-f" },
+    { "name": "chat", "icon": "brand-telegram" },
+    { "name": "u", "icon": "letter-u" }
   ]
 
   implicitWidth: icons.implicitWidth + Style.marginM * 2

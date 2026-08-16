@@ -66,6 +66,8 @@ The example bindings are:
 | `Mod+S` | Firefox in `scratch:web` |
 | `Mod+D` | Empty `scratch:d` workspace |
 | `Mod+F` | Empty `scratch:f` workspace |
+| `Mod+/` | Telegram and Throne in `scratch:chat` |
+| `Mod+U` | Empty `scratch:u` workspace |
 
 Edit `~/.config/niri-scratch/config.toml` if an application's command or `app_id` differs. Discover
 actual IDs inside Niri with `niri msg windows`.
@@ -75,16 +77,15 @@ actual IDs inside Niri with `niri msg windows`.
 Copy the local plugin and enable it in Noctalia's plugin registry/UI:
 
 ```bash
-cp -a contrib/noctalia/niri-scratch contrib/noctalia/niri-workspaces ~/.config/noctalia/plugins/
+cp -a contrib/noctalia/niri-workspaces ~/.config/noctalia/plugins/
 ```
 
-Replace the generic `Workspace` entry with `{ "id": "plugin:niri-workspaces" }`, and add
-`{ "id": "plugin:niri-scratch" }` to another array under `bar.widgets` in
-`~/.config/noctalia/settings.json`. Add enabled `niri-scratch` and `niri-workspaces` states in
+Replace the generic `Workspace` entry with `{ "id": "plugin:niri-workspaces" }` under
+`bar.widgets` in `~/.config/noctalia/settings.json`. Add an enabled `niri-workspaces` state in
 `~/.config/noctalia/plugins.json`, or enable them through Noctalia when local plugins are shown.
-The scratch widget provides browser, D, and F buttons and performs no background polling. The
-included `niri-workspaces` widget replaces Noctalia's generic Workspace widget and deliberately
-shows only named workspaces 1–6, keeping every `scratch:` workspace in the separate scratch group.
+The `niri-workspaces` widget deliberately shows only named workspaces 1–6. While a scratchpad is
+active, its icon replaces the number of the return workspace, and the capsule changes color. This
+keeps scratchpads out of the normal workspace list without adding another bar group.
 
 ## Commands
 

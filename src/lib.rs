@@ -38,6 +38,7 @@ pub struct DaemonConfig {
 pub struct ScratchpadConfig {
     pub workspace: String,
     pub command: Vec<String>,
+    pub commands: Vec<Vec<String>>,
     pub match_app_id: Option<String>,
     pub match_title: Option<String>,
     pub launch_if_missing: bool,
@@ -59,6 +60,7 @@ impl Default for ScratchpadConfig {
         Self {
             workspace: String::new(),
             command: Vec::new(),
+            commands: Vec::new(),
             match_app_id: None,
             match_title: None,
             launch_if_missing: true,
@@ -98,8 +100,13 @@ impl Config {
                     pad.workspace
                 );
             }
-            if pad.command.is_empty() && pad.launch_if_missing {
-                bail!("scratchpad {name}: command is required when launch_if_missing=true");
+            if pad.command.is_empty() && pad.commands.is_empty() && pad.launch_if_missing {
+                bail!(
+                    "scratchpad {name}: command or commands is required when launch_if_missing=true"
+                );
+            }
+            if pad.commands.iter().any(Vec::is_empty) {
+                bail!("scratchpad {name}: commands must not contain an empty command");
             }
             if let Some(pattern) = &pad.match_app_id {
                 Regex::new(pattern)
@@ -384,32 +391,27 @@ impl<C: Compositor> Engine<C> {
             .find(|workspace| workspace.name.as_deref() == Some(pad.workspace.as_str()))
             .map(|workspace| workspace.id);
         let matched = matching_windows(pad, windows)?;
-        let selected = matched
+        let selected: Vec<_> = matched
             .iter()
             .copied()
-            .find(|window| window.workspace_id == scratch_workspace_id)
-            .or_else(|| {
-                pad.adopt_existing
-                    .then(|| matched.first().copied())
-                    .flatten()
-            });
+            .filter(|window| window.workspace_id == scratch_workspace_id || pad.adopt_existing)
+            .collect();
 
-        if let Some(window) = selected
-            && pad.adopt_existing
-            && window.workspace_id != scratch_workspace_id
-        {
-            self.compositor.action(Action::MoveWindowToWorkspace {
-                window_id: Some(window.id),
-                reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
-                focus: false,
-            })?;
+        for window in &selected {
+            if pad.adopt_existing && window.workspace_id != scratch_workspace_id {
+                self.compositor.action(Action::MoveWindowToWorkspace {
+                    window_id: Some(window.id),
+                    reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
+                    focus: false,
+                })?;
+            }
         }
 
         self.compositor.action(Action::FocusWorkspace {
             reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
         })?;
 
-        if let Some(window) = selected {
+        if let Some(window) = selected.first() {
             self.compositor
                 .action(Action::FocusWindow { id: window.id })?;
             return Ok(ControlResponse::ok(format!("shown {name}"), None));
@@ -417,9 +419,16 @@ impl<C: Compositor> Engine<C> {
 
         if pad.launch_if_missing {
             let windows_before: HashSet<u64> = windows.iter().map(|window| window.id).collect();
-            self.compositor.action(Action::Spawn {
-                command: pad.command.clone(),
-            })?;
+            let launch_commands: Vec<Vec<String>> = if pad.commands.is_empty() {
+                vec![pad.command.clone()]
+            } else {
+                pad.commands.clone()
+            };
+            for command in &launch_commands {
+                self.compositor.action(Action::Spawn {
+                    command: command.clone(),
+                })?;
+            }
 
             // Niri's activation token normally places a spawned window on the workspace where the
             // action originated. Keep an IPC-side safety net for slow applications: if the user
@@ -427,18 +436,24 @@ impl<C: Compositor> Engine<C> {
             // back to this scratchpad without stealing focus.
             let deadline =
                 Instant::now() + Duration::from_millis(self.config.daemon.launch_timeout_ms);
+            let mut anchored = HashSet::new();
             while Instant::now() < deadline {
                 thread::sleep(Duration::from_millis(50));
                 let current_windows = self.compositor.windows()?;
-                if let Some(window) = matching_windows(pad, &current_windows)?
+                let new_window_ids: Vec<u64> = matching_windows(pad, &current_windows)?
                     .into_iter()
-                    .find(|window| !windows_before.contains(&window.id))
-                {
+                    .map(|window| window.id)
+                    .filter(|id| !windows_before.contains(id) && !anchored.contains(id))
+                    .collect();
+                for window_id in new_window_ids {
                     self.compositor.action(Action::MoveWindowToWorkspace {
-                        window_id: Some(window.id),
+                        window_id: Some(window_id),
                         reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
                         focus: false,
                     })?;
+                    anchored.insert(window_id);
+                }
+                if anchored.len() >= launch_commands.len() {
                     return Ok(ControlResponse::ok(
                         format!("shown {name}; application launched and anchored"),
                         None,
@@ -725,7 +740,10 @@ mod tests {
                 Ok(vec![])
             } else {
                 // Simulate Firefox mapping on the workspace selected by a very fast user switch.
-                Ok(vec![window(42, "scratch-terminal", 2)])
+                Ok(vec![
+                    window(42, "scratch-terminal", 2),
+                    window(43, "scratch-terminal", 2),
+                ])
             }
         }
         fn action(&mut self, action: Action) -> Result<()> {
@@ -783,6 +801,7 @@ mod tests {
                 ScratchpadConfig {
                     workspace: "scratch:terminal".into(),
                     command: vec!["kitty".into()],
+                    commands: vec![],
                     match_app_id: Some("^scratch-terminal$".into()),
                     match_title: None,
                     launch_if_missing: true,
@@ -810,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn newly_spawned_window_is_anchored_after_fast_workspace_switch() {
+    fn newly_spawned_windows_are_anchored_after_fast_workspace_switch() {
         let dir = tempfile::tempdir().unwrap();
         let compositor = DelayedWindowCompositor {
             workspaces: vec![
@@ -823,11 +842,10 @@ mod tests {
         };
         let mut config = test_config(&dir.path().join("state.json"));
         config.daemon.launch_timeout_ms = 200;
-        config
-            .scratchpads
-            .get_mut("terminal")
-            .unwrap()
-            .adopt_existing = false;
+        let pad = config.scratchpads.get_mut("terminal").unwrap();
+        pad.adopt_existing = false;
+        pad.command.clear();
+        pad.commands = vec![vec!["Telegram".into()], vec!["throne".into()]];
         let mut engine = Engine::new(config, compositor).unwrap();
 
         let response = engine
@@ -841,6 +859,14 @@ mod tests {
             action,
             Action::MoveWindowToWorkspace {
                 window_id: Some(42),
+                reference: WorkspaceReferenceArg::Name(name),
+                focus: false,
+            } if name == "scratch:terminal"
+        )));
+        assert!(engine.compositor.actions.iter().any(|action| matches!(
+            action,
+            Action::MoveWindowToWorkspace {
+                window_id: Some(43),
                 reference: WorkspaceReferenceArg::Name(name),
                 focus: false,
             } if name == "scratch:terminal"

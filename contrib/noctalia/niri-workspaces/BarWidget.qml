@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Services.Compositor
 import qs.Widgets
@@ -13,66 +14,191 @@ Item {
   property string section: ""
   property int sectionWidgetIndex: -1
   property int sectionWidgetsCount: 0
+
   readonly property string screenName: screen ? screen.name : ""
+  readonly property real barHeight: Style.getBarHeightForScreen(screenName)
   readonly property real capsuleHeight: Style.getCapsuleHeightForScreen(screenName)
   property ListModel normalWorkspaces: ListModel {}
-  implicitWidth: row.implicitWidth + Style.marginM * 2
-  implicitHeight: capsuleHeight
+  property string activeScratch: ""
+  property int returnWorkspaceId: -1
+  property int lastNormalWorkspaceId: -1
+  property bool statusRefreshPending: false
 
-  function refresh() {
+  readonly property var scratchIcons: ({
+    "web": "brand-firefox",
+    "d": "letter-d",
+    "f": "letter-f",
+    "chat": "brand-telegram",
+    "u": "letter-u"
+  })
+
+  implicitWidth: capsule.implicitWidth
+  implicitHeight: barHeight
+
+  function focusedWorkspace() {
+    for (var i = 0; i < CompositorService.workspaces.count; i++) {
+      var ws = CompositorService.workspaces.get(i);
+      if (ws.isFocused)
+        return ws;
+    }
+    return null;
+  }
+
+  function scheduleRefresh() {
+    var focused = focusedWorkspace();
+    if (focused && focused.name && focused.name.indexOf("scratch:") === 0) {
+      activeScratch = focused.name.substring(8);
+      if (!statusProcess.running) {
+        statusProcess.command = [Quickshell.env("HOME") + "/.local/bin/niri-scratch", "--json", "status"];
+        statusProcess.running = true;
+      } else {
+        statusRefreshPending = true;
+      }
+    } else {
+      activeScratch = "";
+      returnWorkspaceId = -1;
+      if (focused && Number(focused.name) >= 1 && Number(focused.name) <= 6)
+        lastNormalWorkspaceId = focused.id;
+    }
+    rebuild();
+  }
+
+  function rebuild() {
     var next = [];
+    var targetId = returnWorkspaceId > 0 ? returnWorkspaceId : lastNormalWorkspaceId;
     for (var i = 0; i < CompositorService.workspaces.count; i++) {
       var ws = CompositorService.workspaces.get(i);
       var number = Number(ws.name);
-      if (Number.isInteger(number) && number >= 1 && number <= 6)
-        next.push({ "id": ws.id, "idx": ws.idx, "name": ws.name,
-                    "isFocused": ws.isFocused, "isOccupied": ws.isOccupied,
-                    "output": ws.output });
+      if (Number.isInteger(number) && number >= 1 && number <= 6) {
+        next.push({
+          "workspaceId": ws.id,
+          "workspaceIdx": ws.idx,
+          "workspaceName": ws.name,
+          "workspaceOutput": ws.output,
+          "isFocused": ws.isFocused,
+          "scratchName": activeScratch && ws.id === targetId ? activeScratch : ""
+        });
+      }
     }
-    next.sort(function(a, b) { return Number(a.name) - Number(b.name); });
+    next.sort(function(a, b) { return Number(a.workspaceName) - Number(b.workspaceName); });
     normalWorkspaces.clear();
-    for (var j = 0; j < next.length; j++) normalWorkspaces.append(next[j]);
+    for (var j = 0; j < next.length; j++)
+      normalWorkspaces.append(next[j]);
   }
 
-  Component.onCompleted: Qt.callLater(refresh)
+  function applyStatus(text) {
+    try {
+      var response = JSON.parse(text);
+      var data = response.data || {};
+      for (var name in data) {
+        if (data[name].visible) {
+          activeScratch = name;
+          var origin = data[name].origin;
+          if (origin && origin.workspace_id)
+            returnWorkspaceId = origin.workspace_id;
+          break;
+        }
+      }
+    } catch (error) {
+      Logger.w("niri-workspaces", "Could not parse niri-scratch status: " + error);
+    }
+    rebuild();
+  }
+
+  function activate(workspaceId, workspaceIdx, workspaceName, workspaceOutput, scratchName) {
+    if (scratchName) {
+      toggleProcess.command = [Quickshell.env("HOME") + "/.local/bin/niri-scratch", "toggle", scratchName];
+      toggleProcess.running = true;
+      return;
+    }
+    CompositorService.switchToWorkspace({
+      "id": workspaceId,
+      "idx": workspaceIdx,
+      "name": workspaceName,
+      "output": workspaceOutput
+    });
+  }
+
+  Component.onCompleted: Qt.callLater(scheduleRefresh)
+
   Connections {
     target: CompositorService
-    function onWorkspacesChanged() { Qt.callLater(root.refresh); }
+    function onWorkspacesChanged() { Qt.callLater(root.scheduleRefresh); }
   }
+
+  Process {
+    id: statusProcess
+    running: false
+    stdout: StdioCollector {
+      onStreamFinished: root.applyStatus(text)
+    }
+    onExited: function() {
+      if (root.statusRefreshPending) {
+        root.statusRefreshPending = false;
+        statusProcess.running = true;
+      }
+    }
+  }
+
+  Process {
+    id: toggleProcess
+    running: false
+  }
+
   Rectangle {
-    anchors.fill: parent
+    id: capsule
+    anchors.centerIn: parent
+    implicitWidth: row.implicitWidth + Style.marginM * 2
+    implicitHeight: root.capsuleHeight
     radius: Style.radiusL
-    color: Style.capsuleColor
-    border.color: Style.capsuleBorderColor
+    color: root.activeScratch ? Qt.alpha(Color.mSecondary, 0.22) : Style.capsuleColor
+    border.color: root.activeScratch ? Color.mSecondary : Style.capsuleBorderColor
     border.width: Style.capsuleBorderWidth
+
     RowLayout {
       id: row
       anchors.centerIn: parent
       spacing: Style.marginXS
+
       Repeater {
         model: normalWorkspaces
+
         Rectangle {
-          required property int id
-          required property int idx
-          required property string name
+          required property int workspaceId
+          required property int workspaceIdx
+          required property string workspaceName
+          required property string workspaceOutput
           required property bool isFocused
-          required property bool isOccupied
-          required property string output
-          implicitWidth: root.capsuleHeight * (isFocused ? 1.15 : 0.72)
-          implicitHeight: root.capsuleHeight * 0.72
+          required property string scratchName
+
+          implicitWidth: root.capsuleHeight * ((isFocused || scratchName) ? 0.90 : 0.62)
+          implicitHeight: root.capsuleHeight * 0.56
           radius: height / 2
-          color: isFocused ? Color.mPrimary : Color.mSurfaceVariant
-          NText {
+          color: scratchName ? Color.mSecondary
+                             : (isFocused ? Color.mPrimary : "transparent")
+
+          NIcon {
             anchors.centerIn: parent
-            text: name
-            color: isFocused ? Color.mOnPrimary : Color.mOnSurface
+            visible: parent.scratchName.length > 0
+            icon: root.scratchIcons[parent.scratchName] || "apps"
+            color: Color.mOnSecondary
             applyUiScale: false
           }
+
+          NText {
+            anchors.centerIn: parent
+            visible: parent.scratchName.length === 0
+            text: parent.workspaceName
+            color: parent.isFocused ? Color.mOnPrimary : Color.mOnSurface
+            applyUiScale: false
+          }
+
           MouseArea {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: CompositorService.switchToWorkspace({ "id": parent.id, "idx": parent.idx,
-                                                               "name": parent.name, "output": parent.output })
+            onClicked: root.activate(parent.workspaceId, parent.workspaceIdx,
+                                     parent.workspaceName, parent.workspaceOutput,
+                                     parent.scratchName)
           }
         }
       }
