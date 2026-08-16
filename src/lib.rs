@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use niri_ipc::socket::Socket as NiriSocket;
 use niri_ipc::{
-    Action, Request as NiriRequest, Response, Window, Workspace, WorkspaceReferenceArg,
+    Action, Request as NiriRequest, Response, SizeChange, Window, Workspace, WorkspaceReferenceArg,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,8 @@ pub struct ScratchpadConfig {
     pub match_title: Option<String>,
     pub launch_if_missing: bool,
     pub adopt_existing: bool,
+    pub initial_focus_app_id: Option<String>,
+    pub initial_focus_full_width: bool,
 }
 
 impl Default for DaemonConfig {
@@ -65,6 +67,8 @@ impl Default for ScratchpadConfig {
             match_title: None,
             launch_if_missing: true,
             adopt_existing: true,
+            initial_focus_app_id: None,
+            initial_focus_full_width: false,
         }
     }
 }
@@ -115,6 +119,10 @@ impl Config {
             if let Some(pattern) = &pad.match_title {
                 Regex::new(pattern)
                     .with_context(|| format!("scratchpad {name}: invalid title regex"))?;
+            }
+            if let Some(pattern) = &pad.initial_focus_app_id {
+                Regex::new(pattern)
+                    .with_context(|| format!("scratchpad {name}: invalid initial focus regex"))?;
             }
         }
         Ok(())
@@ -374,15 +382,22 @@ impl<C: Compositor> Engine<C> {
         windows: &[Window],
     ) -> Result<ControlResponse> {
         if focused.name.as_deref() != Some(pad.workspace.as_str()) {
-            self.state.origins.insert(
-                name.to_string(),
-                ReturnTarget {
-                    workspace_id: focused.id,
-                    workspace_name: focused.name.clone(),
-                    output_name: focused.output.clone(),
-                    focused_window_id: focused.active_window_id,
-                },
-            );
+            let direct_origin = ReturnTarget {
+                workspace_id: focused.id,
+                workspace_name: focused.name.clone(),
+                output_name: focused.output.clone(),
+                focused_window_id: focused.active_window_id,
+            };
+            // Opening one scratchpad from another should still return to the last normal
+            // workspace. Flatten the origin chain instead of creating nested scratchpads.
+            let origin = self
+                .config
+                .scratchpads
+                .iter()
+                .find(|(_, other)| focused.name.as_ref() == Some(&other.workspace))
+                .and_then(|(other_name, _)| self.state.origins.get(other_name).cloned())
+                .unwrap_or(direct_origin);
+            self.state.origins.insert(name.to_string(), origin);
             self.state.save(&self.state_path)?;
         }
 
@@ -411,9 +426,7 @@ impl<C: Compositor> Engine<C> {
             reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
         })?;
 
-        if let Some(window) = selected.first() {
-            self.compositor
-                .action(Action::FocusWindow { id: window.id })?;
+        if !selected.is_empty() {
             return Ok(ControlResponse::ok(format!("shown {name}"), None));
         }
 
@@ -454,6 +467,25 @@ impl<C: Compositor> Engine<C> {
                     anchored.insert(window_id);
                 }
                 if anchored.len() >= launch_commands.len() {
+                    if let Some(pattern) = &pad.initial_focus_app_id {
+                        let pattern = Regex::new(pattern)?;
+                        if let Some(window) = current_windows.iter().find(|window| {
+                            anchored.contains(&window.id)
+                                && window
+                                    .app_id
+                                    .as_deref()
+                                    .is_some_and(|app_id| pattern.is_match(app_id))
+                        }) {
+                            self.compositor
+                                .action(Action::FocusWindow { id: window.id })?;
+                            if pad.initial_focus_full_width {
+                                self.compositor.action(Action::MoveColumnToFirst {})?;
+                                self.compositor.action(Action::SetColumnWidth {
+                                    change: SizeChange::SetProportion(1.0),
+                                })?;
+                            }
+                        }
+                    }
                     return Ok(ControlResponse::ok(
                         format!("shown {name}; application launched and anchored"),
                         None,
@@ -741,8 +773,8 @@ mod tests {
             } else {
                 // Simulate Firefox mapping on the workspace selected by a very fast user switch.
                 Ok(vec![
-                    window(42, "scratch-terminal", 2),
-                    window(43, "scratch-terminal", 2),
+                    window(42, "org.telegram.desktop", 2),
+                    window(43, "Throne", 2),
                 ])
             }
         }
@@ -806,6 +838,8 @@ mod tests {
                     match_title: None,
                     launch_if_missing: true,
                     adopt_existing: true,
+                    initial_focus_app_id: None,
+                    initial_focus_full_width: false,
                 },
             )]),
         }
@@ -846,6 +880,9 @@ mod tests {
         pad.adopt_existing = false;
         pad.command.clear();
         pad.commands = vec![vec!["Telegram".into()], vec!["throne".into()]];
+        pad.match_app_id = Some("^(org\\.telegram\\.desktop|Throne)$".into());
+        pad.initial_focus_app_id = Some("^org\\.telegram\\.desktop$".into());
+        pad.initial_focus_full_width = true;
         let mut engine = Engine::new(config, compositor).unwrap();
 
         let response = engine
@@ -871,10 +908,26 @@ mod tests {
                 focus: false,
             } if name == "scratch:terminal"
         )));
+        let focus_position = engine
+            .compositor
+            .actions
+            .iter()
+            .position(|action| matches!(action, Action::FocusWindow { id: 42 }))
+            .unwrap();
+        assert!(matches!(
+            engine.compositor.actions[focus_position + 1],
+            Action::MoveColumnToFirst {}
+        ));
+        assert!(matches!(
+            engine.compositor.actions[focus_position + 2],
+            Action::SetColumnWidth {
+                change: SizeChange::SetProportion(1.0)
+            }
+        ));
     }
 
     #[test]
-    fn show_remembers_origin_and_focuses_existing_window() {
+    fn show_remembers_origin_without_overriding_last_scratch_focus() {
         let dir = tempfile::tempdir().unwrap();
         let compositor = FakeCompositor {
             workspaces: vec![
@@ -897,10 +950,7 @@ mod tests {
             engine.compositor.actions[0],
             Action::FocusWorkspace { .. }
         ));
-        assert!(matches!(
-            engine.compositor.actions[1],
-            Action::FocusWindow { id: 9 }
-        ));
+        assert_eq!(engine.compositor.actions.len(), 1);
     }
 
     #[test]

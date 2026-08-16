@@ -19,6 +19,8 @@ launch_if_missing = false
 workspace = "scratch:chat"
 commands = [["Telegram"], ["throne"]]
 match_app_id = "^(org\\.telegram\\.desktop|Throne)$"
+initial_focus_app_id = "^org\\.telegram\\.desktop$"
+initial_focus_full_width = true
 
 [scratchpads.u]
 workspace = "scratch:u"

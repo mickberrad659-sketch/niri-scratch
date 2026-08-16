@@ -76,11 +76,20 @@ Item {
           "workspaceName": ws.name,
           "workspaceOutput": ws.output,
           "isFocused": ws.isFocused,
-          "scratchName": activeScratch && ws.id === targetId ? activeScratch : ""
+          "scratchName": ""
         });
       }
     }
     next.sort(function(a, b) { return Number(a.workspaceName) - Number(b.workspaceName); });
+    if (activeScratch) {
+      var targetExists = next.some(function(ws) { return ws.workspaceId === targetId; });
+      if (!targetExists && next.length > 0)
+        targetId = next[0].workspaceId;
+      for (var k = 0; k < next.length; k++) {
+        if (next[k].workspaceId === targetId)
+          next[k].scratchName = activeScratch;
+      }
+    }
     normalWorkspaces.clear();
     for (var j = 0; j < next.length; j++)
       normalWorkspaces.append(next[j]);

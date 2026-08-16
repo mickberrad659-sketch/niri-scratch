@@ -87,6 +87,11 @@ The `niri-workspaces` widget deliberately shows only named workspaces 1–6. Whi
 active, its icon replaces the number of the return workspace, and the capsule changes color. This
 keeps scratchpads out of the normal workspace list without adding another bar group.
 
+For multi-application scratchpads, `commands` launches every configured command once. Optional
+`initial_focus_app_id` selects the window that receives focus after all windows are anchored;
+`initial_focus_full_width = true` moves its column first and expands it to the available width.
+Later visits leave focus selection to Niri, preserving the scratchpad's last-focused application.
+
 ## Commands
 
 ```bash
