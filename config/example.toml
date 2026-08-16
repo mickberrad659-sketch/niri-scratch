@@ -1,0 +1,24 @@
+[daemon]
+launch_timeout_ms = 8000
+
+[scratchpads.terminal]
+workspace = "scratch:terminal"
+command = ["kitty", "--class", "niri-scratch-terminal"]
+match_app_id = "^niri-scratch-terminal$"
+
+[scratchpads.web]
+workspace = "scratch:web"
+command = ["firefox", "--new-window"]
+match_app_id = "^firefox$"
+adopt_existing = false
+
+[scratchpads.telegram]
+workspace = "scratch:telegram"
+command = ["Telegram"]
+match_app_id = "^org\\.telegram\\.desktop$"
+
+[scratchpads.codex]
+workspace = "scratch:codex"
+command = ["kitty", "--class", "niri-scratch-codex", "-e", "codex"]
+match_app_id = "^niri-scratch-codex$"
+

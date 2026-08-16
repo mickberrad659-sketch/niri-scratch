@@ -1,0 +1,23 @@
+[Unit]
+Description=Niri scratchpad manager
+PartOf=graphical-session.target
+After=graphical-session.target
+ConditionEnvironment=NIRI_SOCKET
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/niri-scratch daemon
+Restart=on-failure
+RestartSec=250ms
+TimeoutStopSec=2s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t %h/.local/state/niri-scratch
+MemoryMax=96M
+TasksMax=32
+
+[Install]
+WantedBy=graphical-session.target
+

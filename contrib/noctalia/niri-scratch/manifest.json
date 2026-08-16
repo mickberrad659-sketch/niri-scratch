@@ -1,0 +1,16 @@
+{
+  "id": "niri-scratch",
+  "name": "Niri Scratchpads",
+  "version": "0.1.0",
+  "minNoctaliaVersion": "4.1.2",
+  "author": "aln",
+  "license": "GPL-3.0-or-later",
+  "description": "Fast controls for the niri-scratch daemon.",
+  "tags": ["Utility", "Bar", "Niri"],
+  "entryPoints": {
+    "main": "Main.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "dependencies": { "plugins": [] },
+  "metadata": { "defaultSettings": {} }
+}
