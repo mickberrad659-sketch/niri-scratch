@@ -16,10 +16,9 @@ Item {
   readonly property string screenName: screen ? screen.name : ""
   readonly property real capsuleHeight: Style.getCapsuleHeightForScreen(screenName)
   readonly property var pads: [
-    { "name": "terminal", "icon": "terminal-2" },
     { "name": "web", "icon": "brand-firefox" },
-    { "name": "telegram", "icon": "brand-telegram" },
-    { "name": "codex", "icon": "code" }
+    { "name": "d", "icon": "letter-d" },
+    { "name": "f", "icon": "letter-f" }
   ]
 
   implicitWidth: icons.implicitWidth + Style.marginM * 2

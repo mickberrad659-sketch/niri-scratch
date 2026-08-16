@@ -47,7 +47,7 @@ Niri normally after installation, then run `niri-scratch doctor`.
 The procedure is the same, but merge the KDL snippets instead of replacing your config:
 
 1. Build and install the binary, example config, and user service using the commands above.
-2. Add the four top-level `workspace "scratch:…"` declarations from
+2. Add the three top-level `workspace "scratch:…"` declarations from
    [`contrib/niri-bindings.kdl`](contrib/niri-bindings.kdl).
 3. Copy its bindings into your existing `binds {}` block and resolve key conflicts.
 4. Add the ordered `spawn-sh-at-startup` command shown above.
@@ -63,10 +63,9 @@ The example bindings are:
 
 | Binding | Scratchpad |
 |---|---|
-| `Mod+S` | Kitty terminal |
-| `Mod+D` | Separate Firefox window |
-| `Mod+F` | Telegram |
-| `Mod+Shift+C` | Codex in Kitty |
+| `Mod+S` | Firefox in `scratch:web` |
+| `Mod+D` | Empty `scratch:d` workspace |
+| `Mod+F` | Empty `scratch:f` workspace |
 
 Edit `~/.config/niri-scratch/config.toml` if an application's command or `app_id` differs. Discover
 actual IDs inside Niri with `niri msg windows`.
@@ -76,14 +75,16 @@ actual IDs inside Niri with `niri msg windows`.
 Copy the local plugin and enable it in Noctalia's plugin registry/UI:
 
 ```bash
-cp -a contrib/noctalia/niri-scratch ~/.config/noctalia/plugins/
+cp -a contrib/noctalia/niri-scratch contrib/noctalia/niri-workspaces ~/.config/noctalia/plugins/
 ```
 
-Add `{ "id": "plugin:niri-scratch" }` to one of the arrays under `bar.widgets` in
-`~/.config/noctalia/settings.json`. Add an enabled `niri-scratch` state in
-`~/.config/noctalia/plugins.json`, or enable it through Noctalia when local plugins are shown.
-The widget provides terminal, Firefox, Telegram, and Codex buttons and performs no background
-polling.
+Replace the generic `Workspace` entry with `{ "id": "plugin:niri-workspaces" }`, and add
+`{ "id": "plugin:niri-scratch" }` to another array under `bar.widgets` in
+`~/.config/noctalia/settings.json`. Add enabled `niri-scratch` and `niri-workspaces` states in
+`~/.config/noctalia/plugins.json`, or enable them through Noctalia when local plugins are shown.
+The scratch widget provides browser, D, and F buttons and performs no background polling. The
+included `niri-workspaces` widget replaces Noctalia's generic Workspace widget and deliberately
+shows only named workspaces 1–6, keeping every `scratch:` workspace in the separate scratch group.
 
 ## Commands
 

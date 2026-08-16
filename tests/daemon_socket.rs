@@ -22,6 +22,7 @@ fn daemon_round_trip_toggles_against_fake_niri() {
 [daemon]
 socket = "{}"
 state_file = "{}"
+launch_timeout_ms = 0
 
 [scratchpads.terminal]
 workspace = "scratch:terminal"

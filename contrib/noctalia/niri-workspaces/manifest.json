@@ -1,0 +1,13 @@
+{
+  "id": "niri-workspaces",
+  "name": "Niri Workspaces 1-6",
+  "version": "0.1.0",
+  "minNoctaliaVersion": "4.1.2",
+  "author": "aln",
+  "license": "GPL-3.0-or-later",
+  "description": "Workspace bar restricted to normal Niri workspaces 1 through 6.",
+  "tags": ["Utility", "Bar", "Niri"],
+  "entryPoints": { "main": "Main.qml", "barWidget": "BarWidget.qml" },
+  "dependencies": { "plugins": [] },
+  "metadata": { "defaultSettings": {} }
+}

@@ -1,11 +1,9 @@
 // Add these workspaces at top level in ~/.config/niri/config.kdl.
-workspace "scratch:terminal"
 workspace "scratch:web"
-workspace "scratch:telegram"
-workspace "scratch:codex"
+workspace "scratch:d"
+workspace "scratch:f"
 
 // Add these entries inside a binds { ... } block.
-Mod+S repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "terminal"; }
-Mod+D repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "web"; }
-Mod+F repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "telegram"; }
-Mod+Shift+C repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "codex"; }
+Mod+S repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "web"; }
+Mod+D repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "d"; }
+Mod+F repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "f"; }

@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use niri_ipc::socket::Socket as NiriSocket;
@@ -415,9 +416,35 @@ impl<C: Compositor> Engine<C> {
         }
 
         if pad.launch_if_missing {
+            let windows_before: HashSet<u64> = windows.iter().map(|window| window.id).collect();
             self.compositor.action(Action::Spawn {
                 command: pad.command.clone(),
             })?;
+
+            // Niri's activation token normally places a spawned window on the workspace where the
+            // action originated. Keep an IPC-side safety net for slow applications: if the user
+            // changes workspace before the window maps, anchor the newly created matching window
+            // back to this scratchpad without stealing focus.
+            let deadline =
+                Instant::now() + Duration::from_millis(self.config.daemon.launch_timeout_ms);
+            while Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(50));
+                let current_windows = self.compositor.windows()?;
+                if let Some(window) = matching_windows(pad, &current_windows)?
+                    .into_iter()
+                    .find(|window| !windows_before.contains(&window.id))
+                {
+                    self.compositor.action(Action::MoveWindowToWorkspace {
+                        window_id: Some(window.id),
+                        reference: WorkspaceReferenceArg::Name(pad.workspace.clone()),
+                        focus: false,
+                    })?;
+                    return Ok(ControlResponse::ok(
+                        format!("shown {name}; application launched and anchored"),
+                        None,
+                    ));
+                }
+            }
             return Ok(ControlResponse::ok(
                 format!("shown {name}; application launched"),
                 None,
@@ -682,6 +709,34 @@ mod tests {
         }
     }
 
+    struct DelayedWindowCompositor {
+        workspaces: Vec<Workspace>,
+        window_calls: usize,
+        actions: Vec<Action>,
+    }
+
+    impl Compositor for DelayedWindowCompositor {
+        fn workspaces(&mut self) -> Result<Vec<Workspace>> {
+            Ok(self.workspaces.clone())
+        }
+        fn windows(&mut self) -> Result<Vec<Window>> {
+            self.window_calls += 1;
+            if self.window_calls == 1 {
+                Ok(vec![])
+            } else {
+                // Simulate Firefox mapping on the workspace selected by a very fast user switch.
+                Ok(vec![window(42, "scratch-terminal", 2)])
+            }
+        }
+        fn action(&mut self, action: Action) -> Result<()> {
+            self.actions.push(action);
+            Ok(())
+        }
+        fn version(&mut self) -> Result<String> {
+            Ok("26.04".into())
+        }
+    }
+
     fn workspace(id: u64, name: &str, focused: bool) -> Workspace {
         Workspace {
             id,
@@ -742,6 +797,54 @@ mod tests {
         let mut config = test_config(Path::new("/tmp/test-state"));
         config.scratchpads.get_mut("terminal").unwrap().workspace = "3".into();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn config_accepts_empty_scratchpad_when_launch_is_disabled() {
+        let mut config = test_config(Path::new("/tmp/test-state"));
+        let pad = config.scratchpads.get_mut("terminal").unwrap();
+        pad.command.clear();
+        pad.match_app_id = None;
+        pad.launch_if_missing = false;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn newly_spawned_window_is_anchored_after_fast_workspace_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let compositor = DelayedWindowCompositor {
+            workspaces: vec![
+                workspace(1, "1", true),
+                workspace(2, "2", false),
+                workspace(20, "scratch:terminal", false),
+            ],
+            window_calls: 0,
+            actions: vec![],
+        };
+        let mut config = test_config(&dir.path().join("state.json"));
+        config.daemon.launch_timeout_ms = 200;
+        config
+            .scratchpads
+            .get_mut("terminal")
+            .unwrap()
+            .adopt_existing = false;
+        let mut engine = Engine::new(config, compositor).unwrap();
+
+        let response = engine
+            .handle(ControlRequest::Show {
+                scratchpad: "terminal".into(),
+            })
+            .unwrap();
+
+        assert!(response.message.contains("launched and anchored"));
+        assert!(engine.compositor.actions.iter().any(|action| matches!(
+            action,
+            Action::MoveWindowToWorkspace {
+                window_id: Some(42),
+                reference: WorkspaceReferenceArg::Name(name),
+                focus: false,
+            } if name == "scratch:terminal"
+        )));
     }
 
     #[test]
