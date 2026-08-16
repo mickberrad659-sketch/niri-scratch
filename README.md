@@ -63,9 +63,9 @@ The example bindings are:
 
 | Binding | Scratchpad |
 |---|---|
-| `Mod+T` | Kitty terminal |
-| `Mod+S` | Separate Firefox window |
-| `Mod+/` | Telegram |
+| `Mod+S` | Kitty terminal |
+| `Mod+D` | Separate Firefox window |
+| `Mod+F` | Telegram |
 | `Mod+Shift+C` | Codex in Kitty |
 
 Edit `~/.config/niri-scratch/config.toml` if an application's command or `app_id` differs. Discover

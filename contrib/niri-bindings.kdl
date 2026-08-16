@@ -5,7 +5,7 @@ workspace "scratch:telegram"
 workspace "scratch:codex"
 
 // Add these entries inside a binds { ... } block.
-Mod+T repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "terminal"; }
-Mod+S repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "web"; }
-Mod+Slash repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "telegram"; }
+Mod+S repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "terminal"; }
+Mod+D repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "web"; }
+Mod+F repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "telegram"; }
 Mod+Shift+C repeat=false cooldown-ms=150 { spawn "niri-scratch" "toggle" "codex"; }
